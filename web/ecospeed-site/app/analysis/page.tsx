@@ -1,23 +1,45 @@
+"use client";
+
+import { useState } from "react";
+
 export default function Analysis() {
-  const streamlitUrl =
-    "https://ev-app-main-ev9nvgzne8e4qhc5jxwac3.streamlit.app/";
+  const [result, setResult] = useState<any>(null);
+  const [loading, setLoading] = useState(false);
+
+  async function run() {
+    setLoading(true);
+    setResult(null);
+
+    const res = await fetch("/api/analyze", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        start: { lat: 48.8566, lng: 2.3522 }, // Paris (exemple)
+        end: { lat: 45.7640, lng: 4.8357 },   // Lyon (exemple)
+      }),
+    });
+
+    const data = await res.json();
+    setResult(data);
+    setLoading(false);
+  }
 
   return (
-    <main className="min-h-screen bg-black text-white flex flex-col items-center justify-center gap-6 px-6">
+    <main className="min-h-screen bg-black text-white p-10">
       <h1 className="text-4xl font-bold">EcoSpeed — Analysis</h1>
 
-      <a
-        href={streamlitUrl}
-        target="_blank"
-        rel="noreferrer"
-        className="rounded-xl bg-white px-6 py-3 text-black font-semibold"
+      <button
+        onClick={run}
+        className="mt-6 rounded-xl bg-white px-6 py-3 text-black font-semibold"
       >
-        Open Streamlit App
-      </a>
+        {loading ? "Running..." : "Run analysis"}
+      </button>
 
-      <p className="text-white/60 text-sm">
-        The full analysis runs on Streamlit.
-      </p>
+      {result && (
+        <pre className="mt-6 rounded-xl bg-white/5 p-4 text-sm overflow-auto">
+          {JSON.stringify(result, null, 2)}
+        </pre>
+      )}
     </main>
   );
 }
