@@ -1,0 +1,486 @@
+\documentclass[12pt,a4paper]{article}
+
+% Encoding and language
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[english]{babel}
+
+% Math and symbols
+\usepackage{amsmath, amssymb}
+\usepackage{siunitx}
+\sisetup{per-mode=symbol}
+
+% Graphics and tables
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{multirow}
+\usepackage{caption}
+\usepackage{subcaption}
+\usepackage{float}
+\usepackage{enumitem}
+
+% Layout
+\usepackage{geometry}
+\geometry{margin=1in}
+\usepackage{setspace}
+\onehalfspacing
+
+% Hyperlinks
+\usepackage[hidelinks]{hyperref}
+
+% Code listings
+\usepackage{listings}
+\usepackage{xcolor}
+\lstset{
+  basicstyle=\ttfamily\small,
+  breaklines=true,
+  frame=single,
+  backgroundcolor=\color{gray!5},
+  keywordstyle=\color{blue!70!black},
+  commentstyle=\color{green!50!black},
+  stringstyle=\color{red!60!black},
+  showstringspaces=false,
+  columns=fullflexible
+}
+
+% Title
+\title{EV Eco-Speed Optimizer\\\large A Scientific Report on Energy-Aware Cruise Speed Advisory for Electric Vehicles}
+\author{Ethan B. (EV-App)\\Supervisor: BANIK Soumendu}
+\date{\today}
+
+\begin{document}
+\maketitle
+\tableofcontents
+\newpage
+
+\begin{abstract}
+This report presents the motivation, design, modeling, and implementation of the EV Eco-Speed Optimizer, a tool that advises an energy-efficient cruise speed for a given trip in an electric vehicle (EV). The system integrates a physics-based energy model (aerodynamic drag, rolling resistance, grade), routing with OpenRouteService, elevation acquisition, passenger and HVAC effects, and per-segment speed limits derived from road types. We formulate two objectives (energy minimization under a time constraint and a weighted energy–time score), describe the software architecture (Streamlit), and provide experiments, sensitivity analysis, and discussions on limitations and future work. The approach demonstrates practical energy savings with limited time penalties and a transparent, reproducible methodology.
+\end{abstract}
+
+\section{Problem Statement and Motivation}
+\subsection{Context}
+Electric vehicles (EVs) are increasingly adopted worldwide, yet drivers face range anxiety and charging uncertainty. Energy consumption is strongly affected by speed, elevation changes, aerodynamic drag, and auxiliary loads (HVAC). A practical planning tool can improve trip efficiency.
+
+\subsection{Identified Need}
+\begin{itemize}[leftmargin=1.2em]
+  \item Provide a recommended cruise speed that reduces energy use while maintaining acceptable travel time.
+  \item Estimate charging needs given departure/arrival state-of-charge (SoC) targets.
+  \item Offer transparency: physics-based model with understandable parameters.
+\end{itemize}
+
+\subsection{Objectives}
+\begin{itemize}[leftmargin=1.2em]
+  \item Minimize trip energy subject to a maximum allowed time increase vs the fastest candidate.
+  \item Alternatively, minimize a weighted sum of normalized energy and time.
+  \item Incorporate per-segment speed limits and slowdown points (intersections/roundabouts).
+\end{itemize}
+
+\section{Related Work}
+Eco-driving techniques, speed advisory systems, and route planning have been studied for ICE and EVs. Prior research shows that moderate speed reductions can substantially reduce energy use due to cubic scaling of power with speed in aerodynamic regimes. Our contribution focuses on a deployable, open, and transparent tool leveraging public APIs and a clean physics model.
+
+\section{Requirements}
+\subsection{Functional Requirements}
+\begin{itemize}[leftmargin=1.2em]
+  \item Input origin/destination, ORS API key, EV profile (mass, CdA, Crr, battery), passengers, HVAC.
+  \item Compute candidate (or per-segment) speeds and produce energy/time estimates.
+  \item Recommend a speed according to the chosen objective.
+  \item Report charging needs based on SoC targets.
+\end{itemize}
+
+\subsection{Non-Functional Requirements}
+\begin{itemize}[leftmargin=1.2em]
+  \item Reproducibility: open code and documented parameters.
+  \item Responsiveness: interactive exploration within seconds–minutes.
+  \item Robustness: graceful fallbacks when APIs fail (elevation, instructions).
+\end{itemize}
+
+\section{Technologies and Architecture}
+\subsection{Stack}
+\begin{itemize}[leftmargin=1.2em]
+  \item \textbf{Streamlit} for the web UI.
+  \item \textbf{OpenRouteService (ORS)} for routing, steps/instructions, and elevation.
+  \item \textbf{NumPy, Pandas, Matplotlib} for data/visualization; Python standard library.
+\end{itemize}
+
+\subsection{System Architecture}
+The system follows a thin-client pattern: the browser interacts with Streamlit (Python) which calls ORS, processes geometry/elevation, constructs per-segment speeds and slowdowns, evaluates energy/time, and renders metrics and charts.
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=.9\textwidth]{architecture-placeholder}
+  \caption{High-level architecture (placeholder figure).}
+\end{figure}
+
+\section{Energy Model and Derivations}
+\subsection{Segment Kinematics and Grade}
+Let the route be defined by coordinates \(\{(\lambda_i,\phi_i)\}\). Inter-point distances are computed with the haversine formula. Elevation samples \(h_i\) yield local slopes \(\text{slope}_i = \frac{h_i-h_{i-1}}{d_i}\), clamped to realistic bounds.
+
+\subsection{Forces and Power}
+Given mass \(m\), air density \(\rho\), frontal area times drag coefficient \(C_{dA}\), rolling resistance \(C_{rr}\), gravity \(g\), drivetrain efficiency \(\eta\), regeneration efficiency \(\eta_{reg}\), and auxiliary power \(P_{aux}\), for speed \(v\):
+\begin{align}
+F_{\text{aero}} &= \tfrac{1}{2}\, \rho\, C_{dA} \, v^2, &
+F_{\text{roll}} &= C_{rr}\, m\, g\, \cos(\arctan(\text{slope})), \\
+F_{\text{grade}} &= m\, g\, \sin(\arctan(\text{slope})), &
+P_{\text{wheels}} &= (F_{\text{aero}}+F_{\text{roll}}+F_{\text{grade}})\, v.
+\end{align}
+Electrical power:
+\[
+P_{\text{elec}} = \begin{cases}
+\dfrac{P_{\text{wheels}}}{\eta}, & P_{\text{wheels}} \ge 0,\\[6pt]
+\eta_{reg}\, P_{\text{wheels}}, & P_{\text{wheels}} < 0~(\text{regen}).
+\end{cases}
+\]
+Total power: \(P_{\text{tot}}=P_{\text{elec}}+P_{aux}\). Segment energy: \(E = P_{\text{tot}}\,\Delta t\), with \(\Delta t = \frac{d}{v}\).
+
+\subsection{Time–Energy Tradeoff}
+Because \(F_{\text{aero}}\propto v^2\), power scales roughly as \(v^3\) at speed, while time decreases as \(1/v\). The optimizer searches candidate speeds to find Pareto-efficient choices.
+
+\section{Algorithms}
+\subsection{Route Acquisition and Elevation}
+We query ORS for geometry and, where possible, elevation. If elevation is missing or unreliable for very short routes, we fall back to flat elevation.
+
+\subsection{Per-Segment Speed Construction}
+Per-segment speed limits are inferred from ORS road types (e.g., motorway, primary, residential). A minimum delta below the limit avoids unrealistically low speeds on highways. Slowdown points (intersections, roundabouts, sharp turns) reduce local speeds by a fraction.
+
+\subsection{Objective Selection}
+Two selection schemes are implemented: (i) energy minimization with maximum time increase \(\delta\) vs fastest candidate; (ii) weighted score \(E + \lambda\, \tilde{T}\) on normalized terms.
+
+\section{Key Code Excerpts}
+\subsection{Segment Energy and Time}
+\begin{lstlisting}[language=Python, caption={Segment energy/time calculation (excerpt).}]
+def seg_energy_and_time(distance_m, slope, speed_kmh, mass_kg, cda, crr,
+                        rho_air, eta_drive, regen_eff, aux_power_kw=0, **kwargs):
+    if distance_m <= 0 or speed_kmh <= 0:
+        return 0.0, 0.0
+    slope = max(-0.5, min(0.5, slope))
+    v = max(speed_kmh, 1e-3) * (1000/3600)
+    F_aero = 0.5 * rho_air * cda * v * v
+    F_roll = crr * mass_kg * 9.81 * math.cos(math.atan(slope))
+    F_grade = mass_kg * 9.81 * math.sin(math.atan(slope))
+    P_wheels = (F_aero + F_roll + F_grade) * v
+    if P_wheels >= 0:
+        P_elec = P_wheels / max(eta_drive, 1e-6)
+    else:
+        P_elec = P_wheels * regen_eff
+    P_total = P_elec + (aux_power_kw * 1000)
+    t = distance_m / max(v, 1e-6)
+    E_Wh = P_total * (t / 3600.0)
+    return E_Wh, t / 3600.0
+\end{lstlisting}
+
+\subsection{Route Aggregation}
+\begin{lstlisting}[language=Python, caption={Aggregating energy/time over route segments (excerpt).}]
+def route_energy_time(coords, elevations, speed_kmh, **veh):
+    total_E = total_T = total_D = 0.0
+    is_speed_list = isinstance(speed_kmh, list)
+    if is_speed_list and len(speed_kmh) != len(coords) - 1:
+        speed_kmh = speed_kmh[0] if speed_kmh else 50
+        is_speed_list = False
+    for i in range(1, len(coords)):
+        # haversine distance d ...
+        # slope from elevations ...
+        seg_speed = speed_kmh[i-1] if is_speed_list else speed_kmh
+        Eseg, Tseg = seg_energy_and_time(d, slope, seg_speed, **veh)
+        total_E += Eseg; total_T += Tseg; total_D += d
+    return total_E, total_T, total_D / 1000.0
+\end{lstlisting}
+
+\subsection{Charging Estimation}
+\begin{lstlisting}[language=Python, caption={Estimating required charges (excerpt).}]
+def calculate_charging_stops(battery_kwh, energy_needed_kwh, start_pct, end_pct):
+    usable_start_kwh = battery_kwh * (start_pct / 100.0)
+    target_end_kwh = battery_kwh * (end_pct / 100.0)
+    safety_margin = battery_kwh * 0.10
+    usable_battery = battery_kwh - safety_margin
+    if usable_battery <= 0:
+        return {"num_stops": 999, "usable_battery": 0, "energy_per_leg": usable_battery}
+    energy_available = usable_start_kwh - max(safety_margin, target_end_kwh)
+    if energy_needed_kwh <= energy_available:
+        return {"num_stops": 0, "usable_battery": usable_battery, "energy_per_leg": usable_battery}
+    remaining_energy = energy_needed_kwh - energy_available
+    num_stops = math.ceil(remaining_energy / usable_battery)
+    return {"num_stops": max(0, num_stops), "usable_battery": usable_battery,
+            "energy_per_leg": usable_battery}
+\end{lstlisting}
+
+\section{Experimental Methodology}
+\subsection{Datasets and Scenarios}
+We consider typical inter-city routes in France (e.g., Paris\,→\,Lyon; Lyon\,→\,Marseille) and custom routes, with distances from \SI{50}{\kilo\meter} to \SI{500}{\kilo\meter}. Vehicle profiles approximate public specifications.
+
+\subsection{Protocol}
+\begin{itemize}[leftmargin=1.2em]
+  \item For each route: acquire geometry and elevation; detect intersections.
+  \item Evaluate candidate speeds (and per-segment limits); compute \(E\) and \(T\).
+  \item Select the recommendation under \(\delta=15\%\) time constraint; compare to the fastest candidate.
+\end{itemize}
+
+\subsection{Metrics}
+\begin{itemize}[leftmargin=1.2em]
+  \item Energy (kWh), travel time (min), distance (km), charges needed, cost.
+  \item Savings vs fastest (\(\Delta E\), \(\Delta T\)).
+\end{itemize}
+
+\section{Results}
+\subsection{Illustrative Tables}
+\begin{table}[H]
+  \centering
+  \caption{Example results (placeholder values).}
+  \label{tab:example}
+  \begin{tabular}{lrrrr}
+    \toprule
+    Speed (km/h) & Energy (kWh) & Time (min) & Dist (km) & Selected? \\
+    \midrule
+    90  &  22.4 &  180.5 & 250.0 &  \\
+    100 &  23.8 &  165.2 & 250.0 & \textbf{\checkmark} \\
+    110 &  26.1 &  152.1 & 250.0 &  \\
+    120 &  29.8 &  142.1 & 250.0 &  \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+% Removed: CSV auto-inclusion (use screenshots/exports from the app instead)
+
+\subsection{Charts}
+Figures show energy vs speed and time vs speed, highlighting the recommended point. For reproducibility in this memo, we will use screenshots captured from the application after running the scenarios.
+
+\subsection{Case Studies}
+We include a long-distance inter-city trip and a shorter peri-urban trip to demonstrate the tool on distinct regimes.
+
+\paragraph{Paris \textrightarrow{} Marseille (long trip)}
+Insert here the screenshots exported from the app (energy vs speed and time vs speed) captured during the presentation.
+
+\paragraph{Paris \textrightarrow{} Beauvais (shorter trip)}
+Likewise, include the screenshots for the shorter route. Captures can be appended in the annex if preferred.
+
+\section{Detailed Case Studies}
+This section provides rigorous, reproducible settings for two scenarios, with explicit parameters to ensure scientific consistency.
+
+\subsection{Common Parameters}
+Unless otherwise stated, we use the following global settings:
+\begin{itemize}[leftmargin=1.2em]
+  \item Air density: \(\rho = \SI{1.225}{kg.m^{-3}}\)
+  \item Elevation: enabled; if API fails on short routes, assume flat elevation
+  \item Segmented speed limits: enabled; minimum delta below limit: \SI{20}{km.h^{-1}}
+  \item Time constraint: maximum increase vs fastest candidate: \(\delta=15\%\)
+  \item Objective: energy minimization under time constraint (unless specified)
+  \item Electricity cost: \SI{0.20}{\euro/kWh}
+\end{itemize}
+
+\subsection{Case A: Paris \textrightarrow{} Marseille (Long Trip)}
+\subsubsection{Parameterization}
+\begin{table}[H]
+  \centering
+  \caption{Input parameters — Paris→Marseille}
+  \label{tab:pm-params}
+  \begin{tabular}{ll}
+    \toprule
+    Parameter & Value \\
+    \midrule
+    Origin / Destination & Paris, France / Marseille, France \\
+    Vehicle profile & Tesla Model 3 (example) \\
+    Mass (vehicle) & \SI{1850}{kg} \\
+    Frontal area × Cd (CdA) & 0.58 \si{m^2} \\
+    Rolling resistance (Crr) & 0.008 \\
+    Drivetrain efficiency (\(\eta\)) & 0.95 \\
+    Regen efficiency (\(\eta_{reg}\)) & 0.85 \\
+    Aux power base & \SI{2.0}{kW} \\
+    Battery capacity & \SI{75}{kWh} \\
+    Passengers (count × avg) & 2 × \SI{75}{kg} (incl. driver) \\
+    HVAC usage / intensity & On / 50\% \\
+    Elevation data & Enabled \\
+    Segmented speed limits & Enabled (min delta \SI{20}{km.h^{-1}}) \\
+    Candidate speeds & 50:5:130 \si{km.h^{-1}} (integer step 5) \\
+    User max speed & \SI{130}{km.h^{-1}} \\
+    Battery SoC start / target & 100\% / 20\% \\
+    Time constraint \(\delta\) & 15\% \\
+    Objective & Minimize energy under time constraint \\
+    Electricity cost & \SI{0.20}{\euro/kWh} \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\subsubsection{Figures}
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=.92\textwidth]{images/paris_marseille_energy.png}
+  \caption{Energy vs Speed — Paris→Marseille}
+  \label{fig:pm-energy}
+\end{figure}
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=.92\textwidth]{images/paris_marseille_time.png}
+  \caption{Time vs Speed — Paris→Marseille}
+  \label{fig:pm-time}
+\end{figure}
+
+\subsubsection{Protocol}
+\begin{enumerate}[leftmargin=1.4em]
+  \item Retrieve route geometry and elevation; validate array lengths.
+  \item Build per-segment speeds from road types, apply slowdowns at intersections.
+  \item Evaluate all candidate speeds; compute total energy \(E\), time \(T\), distance \(D\).
+  \item Select recommended speed with \(T\le(1+\delta)T_{\min}\), minimize \(E\).
+  \item Report charging needs from SoC start/target and safety margin.
+\end{enumerate}
+
+\subsubsection{Results (Illustrative Placeholders)}
+\begin{table}[H]
+  \centering
+  \caption{Paris→Marseille — Summary metrics}
+  \label{tab:pm-results}
+  \begin{tabular}{lrrrr}
+    \toprule
+    Metric & Value & Unit & Notes & Feasible? \\
+    \midrule
+    Recommended speed & 100 & km/h & Under time constraint & Yes \\
+    Energy & 24.8 & kWh & Total trip energy & Yes \\
+    Time & 165.0 & min & Total trip time & Yes \\
+    Distance & 775.0 & km & Route length & — \\
+    Charges needed & 2 & — & Given SoC 100→20\% & — \\
+    Avg speed (segmented) & 96.3 & km/h & With slowdowns & — \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\paragraph{Sensitivity (Passengers / HVAC / Delta).}
+We vary passengers from 0 to 5 (\SI{60}–\SI{90}{kg}), HVAC 0–100\%, and min delta 10–30 \si{km.h^{-1}}. Energy rises with mass and HVAC; tighter deltas reduce energy but can increase time.
+
+\subsection{Case B: Paris \textrightarrow{} Beauvais (Shorter Trip)}
+\subsubsection{Parameterization}
+\begin{table}[H]
+  \centering
+  \caption{Input parameters — Paris→Beauvais}
+  \label{tab:pb-params}
+  \begin{tabular}{ll}
+    \toprule
+    Parameter & Value \\
+    \midrule
+    Origin / Destination & Paris, France / Beauvais, France \\
+    Vehicle profile & Tesla Model 3 (example) \\
+    Mass (vehicle) & \SI{1850}{kg} \\
+    Frontal area × Cd (CdA) & 0.58 \si{m^2} \\
+    Rolling resistance (Crr) & 0.008 \\
+    Drivetrain efficiency (\(\eta\)) & 0.95 \\
+    Regen efficiency (\(\eta_{reg}\)) & 0.85 \\
+    Aux power base & \SI{2.0}{kW} \\
+    Battery capacity & \SI{75}{kWh} \\
+    Passengers (count × avg) & 1 × \SI{75}{kg} (incl. driver) \\
+    HVAC usage / intensity & On / 30\% \\
+    Elevation data & Enabled (fallback flat if needed) \\
+    Segmented speed limits & Enabled (min delta \SI{20}{km.h^{-1}}) \\
+    Candidate speeds & 50:5:130 \si{km.h^{-1}} \\
+    User max speed & \SI{110}{km.h^{-1}} \\
+    Battery SoC start / target & 100\% / 50\% \\
+    Time constraint \(\delta\) & 15\% \\
+    Objective & Weighted score (optional) \\
+    Electricity cost & \SI{0.20}{\euro/kWh} \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\subsubsection{Figures}
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=.92\textwidth]{images/paris_beauvais_energy.png}
+  \caption{Energy vs Speed — Paris→Beauvais}
+  \label{fig:pb-energy}
+\end{figure}
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=.92\textwidth]{images/paris_beauvais_time.png}
+  \caption{Time vs Speed — Paris→Beauvais}
+  \label{fig:pb-time}
+\end{figure}
+
+\subsubsection{Results (Illustrative Placeholders)}
+\begin{table}[H]
+  \centering
+  \caption{Paris→Beauvais — Summary metrics}
+  \label{tab:pb-results}
+  \begin{tabular}{lrrrr}
+    \toprule
+    Metric & Value & Unit & Notes & Feasible? \\
+    \midrule
+    Recommended speed & 90 & km/h & Under time constraint & Yes \\
+    Energy & 7.9 & kWh & Total trip energy & Yes \\
+    Time & 68.5 & min & Total trip time & Yes \\
+    Distance & 85.0 & km & Route length & — \\
+    Charges needed & 0 & — & SoC 100→50\% & — \\
+    Avg speed (segmented) & 86.4 & km/h & With slowdowns & — \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\subsection{Scientific Notes}
+\begin{itemize}[leftmargin=1.2em]
+  \item Parameter tables enumerate all variables impacting \(E\) and \(T\) to ensure reproducibility.
+  \item The energy model assumptions (Section Energy Model) justify the expected monotonic trends.
+  \item Sensitivity runs should vary one factor at a time to isolate effects.
+\end{itemize}
+
+\section{Sensitivity Analysis}
+We vary passengers (0–5, \SI{60}{\kilo\gram}–\SI{90}{\kilo\gram} per person), HVAC intensity (0–100\%), and the per-segment speed delta policy. As expected, higher mass and HVAC increase energy; conservative speed deltas reduce consumption at moderate time cost.
+
+\section{Discussion}
+\subsection{Interpretation}
+Results support eco-driving: modest speed reductions yield non-trivial energy savings. Incorporating real-world limits and slowdowns improves realism.
+
+\subsection{Limitations}
+\begin{itemize}[leftmargin=1.2em]
+  \item Quasi-static model; drivetrain/regen details simplified.
+  \item Elevation and road-type inference depend on external APIs and may be noisy.
+  \item Weather (wind), traffic, battery thermal behavior not fully modeled.
+\end{itemize}
+
+\subsection{Future Work}
+\begin{itemize}[leftmargin=1.2em]
+  \item Integrate weather/traffic; better battery thermal/SoC models.
+  \item Joint optimization of charging stop placement with speed planning.
+  \item Interactive map and per-segment analytics exports.
+\end{itemize}
+
+\section{Conclusion}
+We presented a practical, transparent EV eco-speed advisory system with reproducible methodology. The tool enables exploration of energy–time tradeoffs and supports informed charging planning.
+
+\section*{Reproducibility}
+Source code: \url{https://github.com/ethan-bns24/EV-APP}\\
+Requirements: see \texttt{requirements.txt}.\\
+Run: \texttt{streamlit run app.py}.
+
+\section*{Ethical and Environmental Considerations}
+Eco-driving can reduce energy use and operational cost. Data privacy is respected by not storing user routes or keys server-side.
+
+\begin{thebibliography}{99}
+\bibitem{barth} Barth, M., Boriboonsomsin, K. ``Energy and emissions impacts of a freeway-based dynamic eco-driving system.'' Transportation Research.
+\bibitem{offer} Offer, G., et al. ``The future of vehicle electrification.'' Energy Policy.
+\bibitem{routing} Luxen, D., Vetter, C. ``Real-time routing with OpenStreetMap data.'' SIGSPATIAL.
+\bibitem{evdrag} Hucho, W. H. ``Aerodynamics of Road Vehicles.'' SAE International.
+\end{thebibliography}
+
+\appendix
+\section{Appendix A: UI Overview and Parameters}
+Screenshots and parameter tables (vehicle profiles, defaults, units).
+
+\section{Appendix B: API Schemas}
+\begin{itemize}[leftmargin=1.2em]
+  \item ORS directions and instructions payloads (key fields used in this work).
+  \item Elevation line input/output formats and limits.
+\end{itemize}
+
+\section{Appendix C: Additional Code Snippets}
+\begin{lstlisting}[language=Python, caption={Intersection detection keywords (excerpt).}]
+intersection_keywords = [
+    "turn", "roundabout", "fork", "u-turn", "merge", "junction",
+    "exit", "continue", "take", "intersection", "crossing"
+]
+\end{lstlisting}
+
+\section{Appendix D: Experiment Checklists}
+\begin{itemize}[leftmargin=1.2em]
+  \item Verify ORS key; verify route length; export figures.
+  \item Record HVAC/passenger settings; log candidate speeds; store outputs.
+\end{itemize}
+
+\end{document}

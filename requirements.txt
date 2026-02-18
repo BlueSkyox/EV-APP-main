@@ -1,0 +1,9 @@
+streamlit==1.38.0
+requests>=2.31.0
+matplotlib>=3.8.0
+pandas>=2.2.0
+python-dotenv>=1.0.0
+polyline>=1.4.0
+numpy>=1.24.0
+folium>=0.15.0
+streamlit-folium>=0.20.0
